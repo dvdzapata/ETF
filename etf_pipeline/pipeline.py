@@ -387,6 +387,18 @@ class ETLPipeline:
         )
         rows = []
         for item in filtered:
+            payout_date = _parse_date_value(item.get("date"))
+            if payout_date is None:
+                rejection_logger.warning(
+                    "Rejected dividend record for %s | date=%s | reason=%s",
+                    symbol,
+                    item.get("date"),
+                    "Unparseable payout date",
+                )
+                continue
+            record_date = _parse_date_value(item.get("recordDate"))
+            payment_date = _parse_date_value(item.get("paymentDate"))
+            declaration_date = _parse_date_value(item.get("declarationDate"))
             yield_value = parse_decimal(item.get("yield"))
             if not in_range(yield_value, 0, 100):
                 rejection_logger.warning(
@@ -400,10 +412,10 @@ class ETLPipeline:
                 (
                     symbol,
                     symbol_id,
-                    item.get("date"),
-                    item.get("recordDate"),
-                    item.get("paymentDate"),
-                    item.get("declarationDate"),
+                    payout_date,
+                    record_date,
+                    payment_date,
+                    declaration_date,
                     parse_decimal(item.get("adjDividend")),
                     parse_decimal(item.get("dividend")),
                     yield_value,
@@ -429,7 +441,10 @@ class ETLPipeline:
             logger.info("Inserted %s dividend rows for %s", inserted, symbol)
         else:
             logger.info("No new dividend rows for %s", symbol)
-        self.state.update_symbol_state(symbol, {"dividend_last_date": rows[-1][2] if rows else last_date})
+        last_value = rows[-1][2] if rows else last_date
+        if isinstance(last_value, (datetime, date)):
+            last_value = last_value.isoformat()
+        self.state.update_symbol_state(symbol, {"dividend_last_date": last_value})
 
     def _update_country_exposure(self, symbol_id: int, symbol: str) -> None:
         data = self.client.get_json("etf/country-weightings", {"symbol": symbol})
