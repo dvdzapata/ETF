@@ -90,11 +90,14 @@ class Database:
                     conn.rollback()
                     raise
 
-    def execute_batch(self, query: str, params: Sequence[Sequence]) -> None:
+    def execute_batch(self, query: str, params: Sequence[Sequence]) -> int:
         if not params:
-            return
+            return 0
         with self.cursor() as cur:
             cur.executemany(query, params)
+            rowcount = cur.rowcount if cur.rowcount not in (-1, None) else 0
+        logger.debug("Executed batch query affecting %s rows", rowcount)
+        return rowcount
 
     def fetchall(self, query: str, params: Sequence | None = None) -> list[dict]:
         with self.cursor() as cur:

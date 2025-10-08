@@ -23,7 +23,7 @@ class SymbolRepository:
         rows = self.db.fetchall(query)
         return {row["symbol"] for row in rows}
 
-    def insert_symbols(self, symbols: Iterable[dict]) -> list[str]:
+    def insert_symbols(self, symbols: Iterable[dict]) -> tuple[list[str], int]:
         query = (
             "INSERT INTO etf_symbols (symbol, nombre, mercado, moneda) "
             "VALUES (%s, %s, %s, %s) ON CONFLICT (symbol) DO NOTHING"
@@ -43,11 +43,16 @@ class SymbolRepository:
                 )
             )
             inserted_symbols.append(symbol)
-        if params:
-            self.db.execute_batch(query, params)
-        return inserted_symbols
+        inserted_count = self.db.execute_batch(query, params) if params else 0
+        if inserted_count and inserted_count != len(inserted_symbols):
+            current = self.existing_symbols()
+            inserted_symbols = [symbol for symbol in inserted_symbols if symbol in current]
+        elif inserted_count == 0:
+            inserted_symbols = []
+        logger.info("Persisted %s new symbols", inserted_count)
+        return inserted_symbols, inserted_count
 
-    def update_symbol_profiles(self, profiles: Iterable[dict]) -> None:
+    def update_symbol_profiles(self, profiles: Iterable[dict]) -> int:
         query = (
             "UPDATE etf_symbols SET "
             "nombre = %s, "
@@ -96,8 +101,9 @@ class SymbolRepository:
                     symbol,
                 )
             )
-        if params:
-            self.db.execute_batch(query, params)
+        updated = self.db.execute_batch(query, params) if params else 0
+        logger.info("Updated %s ETF symbol profiles", updated)
+        return updated
 
 
 class TimeSeriesRepository:
@@ -112,14 +118,16 @@ class TimeSeriesRepository:
             return row["max_date"]
         return None
 
-    def insert_rows(self, columns: List[str], rows: Iterable[Tuple]) -> None:
+    def insert_rows(self, columns: List[str], rows: Iterable[Tuple]) -> int:
         rows_list = list(rows)
         if not rows_list:
-            return
+            return 0
         placeholders = ", ".join(["%s"] * len(columns))
         columns_clause = ", ".join(columns)
         query = f"INSERT INTO {self.table} ({columns_clause}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
-        self.db.execute_batch(query, rows_list)
+        inserted = self.db.execute_batch(query, rows_list)
+        logger.info("Inserted %s rows into %s", inserted, self.table)
+        return inserted
 
 
 class SnapshotRepository:
@@ -128,7 +136,8 @@ class SnapshotRepository:
         self.table = table
         self.key_columns = key_columns
 
-    def replace_snapshot(self, symbol_id: int, symbol: str, rows: Iterable[dict], columns: list[str]) -> None:
+    def replace_snapshot(self, symbol_id: int, symbol: str, rows: Iterable[dict], columns: list[str]) -> int:
+        inserted = 0
         with self.db.cursor() as cur:
             placeholders = ", ".join(["%s"] * len(columns))
             columns_clause = ", ".join(columns)
@@ -137,13 +146,20 @@ class SnapshotRepository:
             insert_query = f"INSERT INTO {self.table} ({columns_clause}) VALUES ({placeholders})"
             for row in rows:
                 cur.execute(insert_query, tuple(row[col] for col in columns))
+                if cur.rowcount not in (-1, None):
+                    inserted += cur.rowcount
+        logger.info(
+            "Replaced snapshot for %s in %s with %s rows", symbol, self.table, inserted
+        )
+        return inserted
 
 
 class HoldingsRepository:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def replace_holdings(self, symbol_id: int, symbol: str, rows: Iterable[dict]) -> None:
+    def replace_holdings(self, symbol_id: int, symbol: str, rows: Iterable[dict]) -> int:
+        inserted = 0
         with self.db.cursor() as cur:
             cur.execute("DELETE FROM etf_holdings WHERE symbol = %s", (symbol,))
             query = (
@@ -166,13 +182,17 @@ class HoldingsRepository:
                         row.get("updated_at"),
                     ),
                 )
+                if cur.rowcount not in (-1, None):
+                    inserted += cur.rowcount
+        logger.info("Replaced holdings for %s with %s rows", symbol, inserted)
+        return inserted
 
 
 class RiskRepositories:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def upsert_country_risk(self, rows: Iterable[dict]) -> None:
+    def upsert_country_risk(self, rows: Iterable[dict]) -> int:
         query = (
             "INSERT INTO riesgo_pais (country, continent, countryRiskPremium, totalEquityRiskPremium) "
             "VALUES (%s, %s, %s, %s) "
@@ -187,15 +207,19 @@ class RiskRepositories:
             )
             for row in rows
         ]
-        self.db.execute_batch(query, params)
+        affected = self.db.execute_batch(query, params)
+        logger.info("Upserted %s country risk rows", affected)
+        return affected
 
-    def upsert_industry_risk(self, rows: Iterable[dict]) -> None:
+    def upsert_industry_risk(self, rows: Iterable[dict]) -> int:
         query = (
             "INSERT INTO riesgo_industria (industry, average_change) VALUES (%s, %s) "
             "ON CONFLICT (industry) DO UPDATE SET average_change = EXCLUDED.average_change"
         )
         params = [(row.get("industry"), row.get("average_change")) for row in rows]
-        self.db.execute_batch(query, params)
+        affected = self.db.execute_batch(query, params)
+        logger.info("Upserted %s industry risk rows", affected)
+        return affected
 
 
 __all__ = [

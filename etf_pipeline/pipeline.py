@@ -128,11 +128,11 @@ class ETLPipeline:
         if not new_symbols:
             logger.info("No new symbols found")
             return
-        inserted_symbols = self.symbol_repo.insert_symbols(new_symbols)
-        if not inserted_symbols:
+        inserted_symbols, inserted_count = self.symbol_repo.insert_symbols(new_symbols)
+        if not inserted_count:
             logger.info("No new symbols were persisted after filtering")
             return
-        logger.info("Inserted %s new symbols", len(inserted_symbols))
+        logger.info("Inserted %s new symbols", inserted_count)
         self._populate_symbol_profiles(inserted_symbols)
 
     def _populate_symbol_profiles(self, symbols: Iterable[str]) -> None:
@@ -176,8 +176,10 @@ class ETLPipeline:
             }
             profiles.append(profile)
         if profiles:
-            self.symbol_repo.update_symbol_profiles(profiles)
-            logger.info("Updated ETF profiles for %s symbols", len(profiles))
+            updated = self.symbol_repo.update_symbol_profiles(profiles)
+            logger.info("Updated ETF profiles for %s symbols", updated)
+        else:
+            logger.info("No profiles downloaded for new symbols")
 
     def _process_symbol(self, symbol_row: dict) -> None:
         symbol_id = symbol_row["id"]
@@ -205,10 +207,13 @@ class ETLPipeline:
             params["from"] = (last_date + timedelta(days=1)).isoformat()
         endpoint = f"historical-price-eod/full"
         data = self.client.get_json(endpoint, {**params, "symbol": symbol})
-        if not isinstance(data, dict) or "historical" not in data:
+        if isinstance(data, dict):
+            records = data.get("historical", [])
+        elif isinstance(data, list):
+            records = data
+        else:
             logger.warning("Unexpected EOD response for %s: %s", symbol, data)
             return
-        records = data.get("historical", [])
         filtered = self._validate_eod_records(symbol, records)
         rows = [
             (
@@ -226,7 +231,7 @@ class ETLPipeline:
             )
             for item in filtered
         ]
-        repo.insert_rows(
+        inserted = repo.insert_rows(
             [
                 "symbol",
                 "id",
@@ -242,6 +247,10 @@ class ETLPipeline:
             ],
             rows,
         )
+        if inserted:
+            logger.info("Inserted %s EOD rows for %s", inserted, symbol)
+        else:
+            logger.info("No new EOD rows for %s", symbol)
         self.state.update_symbol_state(symbol, {"eod_last_date": rows[-1][2] if rows else last_date})
 
     def _validate_eod_records(self, symbol: str, records: Iterable[dict]) -> list[dict]:
@@ -261,10 +270,13 @@ class ETLPipeline:
         if isinstance(last_date, date):
             params["from"] = (last_date + timedelta(days=1)).isoformat()
         data = self.client.get_json("historical-price-eod/dividend-adjusted", {**params, "symbol": symbol})
-        if not isinstance(data, dict) or "historical" not in data:
+        if isinstance(data, dict):
+            records = data.get("historical", [])
+        elif isinstance(data, list):
+            records = data
+        else:
             logger.warning("Unexpected adjusted OHLC response for %s: %s", symbol, data)
             return
-        records = data.get("historical", [])
         filtered = filter_records(
             records,
             validators=[("date", lambda value: isinstance(value, str) and is_valid_date(value), "Invalid date")],
@@ -284,10 +296,14 @@ class ETLPipeline:
             )
             for item in filtered
         ]
-        repo.insert_rows(
+        inserted = repo.insert_rows(
             ["symbol", "id", "date", "adj_open", "adj_high", "adj_low", "adj_close", "volume"],
             rows,
         )
+        if inserted:
+            logger.info("Inserted %s adjusted OHLC rows for %s", inserted, symbol)
+        else:
+            logger.info("No new adjusted OHLC rows for %s", symbol)
         self.state.update_symbol_state(symbol, {"adjusted_last_date": rows[-1][2] if rows else last_date})
 
     def _update_hourly_prices(self, symbol_id: int, symbol: str) -> None:
@@ -297,6 +313,8 @@ class ETLPipeline:
         if isinstance(last_ts, datetime):
             params["from"] = (last_ts + timedelta(hours=1)).isoformat()
         data = self.client.get_json("historical-chart/1hour", {**params, "symbol": symbol})
+        if isinstance(data, dict) and "historical" in data:
+            data = data.get("historical", [])
         if not isinstance(data, list):
             logger.warning("Unexpected hourly response for %s: %s", symbol, data)
             return
@@ -319,10 +337,14 @@ class ETLPipeline:
             )
             for item in filtered
         ]
-        repo.insert_rows(
+        inserted = repo.insert_rows(
             ["symbol", "id", "date", "open", "low", "high", "close", "volume"],
             rows,
         )
+        if inserted:
+            logger.info("Inserted %s hourly rows for %s", inserted, symbol)
+        else:
+            logger.info("No new hourly rows for %s", symbol)
         self.state.update_symbol_state(symbol, {"hourly_last_ts": rows[-1][2] if rows else last_ts})
 
     def _update_dividends(self, symbol_id: int, symbol: str) -> None:
@@ -332,6 +354,8 @@ class ETLPipeline:
         if isinstance(last_date, date):
             params["from"] = (last_date + timedelta(days=1)).isoformat()
         data = self.client.get_json("dividends", {**params, "symbol": symbol})
+        if isinstance(data, dict) and "historical" in data:
+            data = data.get("historical", [])
         if not isinstance(data, list):
             logger.warning("Unexpected dividend response for %s: %s", symbol, data)
             return
@@ -366,7 +390,7 @@ class ETLPipeline:
                     item.get("frequency"),
                 )
             )
-        repo.insert_rows(
+        inserted = repo.insert_rows(
             [
                 "symbol",
                 "id",
@@ -381,6 +405,10 @@ class ETLPipeline:
             ],
             rows,
         )
+        if inserted:
+            logger.info("Inserted %s dividend rows for %s", inserted, symbol)
+        else:
+            logger.info("No new dividend rows for %s", symbol)
         self.state.update_symbol_state(symbol, {"dividend_last_date": rows[-1][2] if rows else last_date})
 
     def _update_country_exposure(self, symbol_id: int, symbol: str) -> None:
@@ -407,7 +435,13 @@ class ETLPipeline:
                     "weight_percentage": weight,
                 }
             )
-        self.country_repo.replace_snapshot(symbol_id, symbol, validated, ["symbol", "id", "country", "weight_percentage"])
+        inserted = self.country_repo.replace_snapshot(
+            symbol_id, symbol, validated, ["symbol", "id", "country", "weight_percentage"]
+        )
+        if inserted:
+            logger.info("Persisted %s country exposures for %s", inserted, symbol)
+        else:
+            logger.info("No country exposure data for %s", symbol)
 
     def _update_industry_exposure(self, symbol_id: int, symbol: str) -> None:
         data = self.client.get_json("etf/sector-weightings", {"symbol": symbol})
@@ -433,7 +467,13 @@ class ETLPipeline:
                     "weight_percentage": weight,
                 }
             )
-        self.industry_repo.replace_snapshot(symbol_id, symbol, validated, ["symbol", "id", "industry", "weight_percentage"])
+        inserted = self.industry_repo.replace_snapshot(
+            symbol_id, symbol, validated, ["symbol", "id", "industry", "weight_percentage"]
+        )
+        if inserted:
+            logger.info("Persisted %s industry exposures for %s", inserted, symbol)
+        else:
+            logger.info("No industry exposure data for %s", symbol)
 
     def _update_asset_exposure(self, symbol_id: int, symbol: str) -> None:
         data = self.client.get_json("etf/asset-exposure", {"symbol": symbol})
@@ -465,12 +505,16 @@ class ETLPipeline:
                     "market_value": market_value,
                 }
             )
-        self.asset_repo.replace_snapshot(
+        inserted = self.asset_repo.replace_snapshot(
             symbol_id,
             symbol,
             validated,
             ["symbol", "id", "asset", "shares_number", "weight_percentage", "market_value"],
         )
+        if inserted:
+            logger.info("Persisted %s asset exposures for %s", inserted, symbol)
+        else:
+            logger.info("No asset exposure data for %s", symbol)
 
     def _update_holdings(self, symbol_id: int, symbol: str) -> None:
         data = self.client.get_json("etf/holdings", {"symbol": symbol})
@@ -510,7 +554,11 @@ class ETLPipeline:
                     "updated_at": item.get("updatedAt"),
                 }
             )
-        self.holdings_repo.replace_holdings(symbol_id, symbol, cleaned)
+        inserted = self.holdings_repo.replace_holdings(symbol_id, symbol, cleaned)
+        if inserted:
+            logger.info("Persisted %s holdings rows for %s", inserted, symbol)
+        else:
+            logger.info("No holdings data for %s", symbol)
 
     def _update_market_risk(self) -> None:
         logger.info("Refreshing market risk premium data")
@@ -532,7 +580,8 @@ class ETLPipeline:
                     "totalEquityRiskPremium": parse_decimal(item.get("totalEquityRiskPremium")),
                 }
             )
-        self.risk_repo.upsert_country_risk(cleaned)
+        affected = self.risk_repo.upsert_country_risk(cleaned)
+        logger.info("Upserted %s market risk premium rows", affected)
 
     def _update_industry_snapshot(self) -> None:
         logger.info("Refreshing industry performance snapshot")
@@ -547,7 +596,8 @@ class ETLPipeline:
         cleaned = []
         for item in data:
             cleaned.append({"industry": item.get("industry"), "average_change": parse_decimal(item.get("averageChange"))})
-        self.risk_repo.upsert_industry_risk(cleaned)
+        affected = self.risk_repo.upsert_industry_risk(cleaned)
+        logger.info("Upserted %s industry performance rows", affected)
 
 
 __all__ = ["ETLPipeline"]
