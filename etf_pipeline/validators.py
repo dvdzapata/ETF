@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+import re
 from typing import Any, Callable, Iterable
 
 
@@ -16,13 +17,38 @@ def is_valid_date(value: str | None) -> bool:
         return False
 
 
+_PERCENT_PATTERN = re.compile(r"\s*%\s*$")
+
+
 def parse_decimal(value: Any) -> Decimal | None:
     if value in (None, "", "null"):
         return None
-    try:
-        return Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        return None
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, (int, float)):
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if _PERCENT_PATTERN.search(text):
+            text = _PERCENT_PATTERN.sub("", text)
+        text = text.strip()
+        if not text:
+            return None
+        if "," in text and "." in text:
+            text = text.replace(",", "")
+        elif "," in text:
+            text = text.replace(",", ".")
+        text = text.replace(" ", "")
+        try:
+            return Decimal(text)
+        except (InvalidOperation, ValueError):
+            return None
+    return None
 
 
 def in_range(value: Decimal | None, minimum: Decimal | float, maximum: Decimal | float) -> bool:

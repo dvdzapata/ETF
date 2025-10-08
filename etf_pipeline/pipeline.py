@@ -620,19 +620,84 @@ class ETLPipeline:
 
     def _update_industry_snapshot(self) -> None:
         logger.info("Refreshing industry performance snapshot")
-        try:
-            data = self.client.get_json("industry-performance-snapshot")
-        except Exception:
-            logger.exception("Failed to download industry performance snapshot")
+        today = date.today()
+        candidates: list[date] = [today]
+        last_snapshot = _parse_date_value(self.state.get("industry_snapshot_date"))
+        if last_snapshot:
+            candidates.append(last_snapshot)
+        for offset in range(1, 6):
+            candidates.append(today - timedelta(days=offset))
+
+        unique_candidates: list[date] = []
+        seen: set[date] = set()
+        for candidate in candidates:
+            if candidate not in seen:
+                seen.add(candidate)
+                unique_candidates.append(candidate)
+
+        snapshot_data: list[dict] | None = None
+        snapshot_date: str | None = None
+        for candidate in unique_candidates:
+            try:
+                payload = self.client.get_json(
+                    "industry-performance-snapshot", {"date": candidate.isoformat()}
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning(
+                    "Industry performance snapshot unavailable for %s: %s",
+                    candidate.isoformat(),
+                    exc,
+                )
+                continue
+            if not isinstance(payload, list):
+                logger.warning(
+                    "Unexpected industry performance payload for %s: %s",
+                    candidate.isoformat(),
+                    payload,
+                )
+                continue
+            if not payload:
+                logger.info(
+                    "No industry performance data returned for %s", candidate.isoformat()
+                )
+                continue
+            snapshot_data = payload
+            snapshot_date_value = _parse_date_value(payload[0].get("date")) or candidate
+            snapshot_date = snapshot_date_value.isoformat()
+            break
+
+        if not snapshot_data or snapshot_date is None:
+            logger.warning(
+                "Unable to refresh industry performance snapshot after trying %s dates",
+                len(unique_candidates),
+            )
             return
-        if not isinstance(data, list):
-            logger.warning("Unexpected industry performance payload: %s", data)
-            return
+
         cleaned = []
-        for item in data:
-            cleaned.append({"industry": item.get("industry"), "average_change": parse_decimal(item.get("averageChange"))})
+        for item in snapshot_data:
+            industry = item.get("industry")
+            if not industry:
+                rejection_logger.warning(
+                    "Rejected industry snapshot row | missing industry | payload=%s",
+                    item,
+                )
+                continue
+            cleaned.append(
+                {
+                    "industry": industry,
+                    "average_change": parse_decimal(item.get("averageChange")),
+                }
+            )
+        if not cleaned:
+            logger.warning(
+                "No valid industry performance rows extracted for %s", snapshot_date
+            )
+            return
         affected = self.risk_repo.upsert_industry_risk(cleaned)
-        logger.info("Upserted %s industry performance rows", affected)
+        self.state.update("industry_snapshot_date", snapshot_date)
+        logger.info(
+            "Upserted %s industry performance rows for %s", affected, snapshot_date
+        )
 
 
 __all__ = ["ETLPipeline"]
