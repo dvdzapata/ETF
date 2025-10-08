@@ -36,6 +36,9 @@ class PipelineSettings:
     max_workers: int = 8
     request_timeout: int = 30
     request_retries: int = 3
+    state_flush_interval_seconds: int = 30
+    state_flush_threshold: int = 100
+    progress_log_interval: int = 25
 
 
 def _parse_env_bool(value: str | None, default: bool = False) -> bool:
@@ -91,6 +94,10 @@ def build_settings(env_path: Path | None = None) -> PipelineSettings:
     request_timeout = int(env_values.get("PIPELINE_REQUEST_TIMEOUT", "30"))
     request_retries = int(env_values.get("PIPELINE_REQUEST_RETRIES", "3"))
 
+    state_flush_interval = int(env_values.get("PIPELINE_STATE_FLUSH_INTERVAL", "30"))
+    state_flush_threshold = int(env_values.get("PIPELINE_STATE_FLUSH_THRESHOLD", "100"))
+    progress_log_interval = int(env_values.get("PIPELINE_PROGRESS_INTERVAL", "25"))
+
     return PipelineSettings(
         api=api_settings,
         database=db_settings,
@@ -99,6 +106,9 @@ def build_settings(env_path: Path | None = None) -> PipelineSettings:
         max_workers=max_workers,
         request_timeout=request_timeout,
         request_retries=request_retries,
+        state_flush_interval_seconds=state_flush_interval,
+        state_flush_threshold=state_flush_threshold,
+        progress_log_interval=progress_log_interval,
     )
 
 

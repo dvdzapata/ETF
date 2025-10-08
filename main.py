@@ -24,7 +24,11 @@ def main() -> None:
     logger = logging.getLogger(__name__)
     logger.info("Initialising ETF pipeline")
 
-    state = DownloadState(settings.state_file)
+    state = DownloadState(
+        settings.state_file,
+        flush_interval=settings.state_flush_interval_seconds,
+        flush_threshold=settings.state_flush_threshold,
+    )
     database = Database(settings.database, max_pool_size=max(settings.max_workers, 4))
     database.connect()
 
@@ -57,6 +61,7 @@ def main() -> None:
         pipeline.run()
 
     database.close()
+    state.close()
 
 
 if __name__ == "__main__":

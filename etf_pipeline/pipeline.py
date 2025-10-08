@@ -100,16 +100,36 @@ class ETLPipeline:
         logger.info("Starting ETF pipeline run")
         self._sync_symbols()
         symbols = self.symbol_repo.list_symbols()
-        logger.info("Processing %s symbols", len(symbols))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.settings.max_workers) as executor:
-            futures = [executor.submit(self._process_symbol, symbol) for symbol in symbols]
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    future.result()
-                except Exception as exc:  # pylint: disable=broad-except
-                    logger.exception("Unhandled error during symbol processing: %s", exc)
+        total_symbols = len(symbols)
+        logger.info(
+            "Processing %s symbols with up to %s workers",
+            total_symbols,
+            self.settings.max_workers,
+        )
+        processed = 0
+        progress_interval = max(1, self.settings.progress_log_interval)
+        try:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.settings.max_workers
+            ) as executor:
+                futures = [executor.submit(self._process_symbol, symbol) for symbol in symbols]
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as exc:  # pylint: disable=broad-except
+                        logger.exception("Unhandled error during symbol processing: %s", exc)
+                    finally:
+                        processed += 1
+                        if processed % progress_interval == 0 or processed == total_symbols:
+                            logger.info(
+                                "Progress: %s/%s symbols complete", processed, total_symbols
+                            )
+        finally:
+            self.state.flush()
+
         self._update_market_risk()
         self._update_industry_snapshot()
+        self.state.flush()
         logger.info("Pipeline run completed")
 
     def _sync_symbols(self) -> None:
