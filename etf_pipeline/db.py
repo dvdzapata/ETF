@@ -3,23 +3,45 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
-from typing import Iterable, Sequence
+from typing import Generator, Sequence
 
 import psycopg
 from psycopg import conninfo as psycopg_conninfo
 from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
+
+try:  # pragma: no cover - fallback exercised only when optional dependency missing
+    from psycopg_pool import ConnectionPool as _PsycopgConnectionPool
+except ModuleNotFoundError:  # pragma: no cover - keep runtime resilient without pool package
+    _PsycopgConnectionPool = None
 
 from .config import DatabaseSettings
 
 logger = logging.getLogger(__name__)
 
 
+class _DirectConnectionPool:
+    """Very small substitute when psycopg_pool is unavailable."""
+
+    def __init__(self, dsn: str) -> None:
+        self._dsn = dsn
+
+    @contextmanager
+    def connection(self) -> Generator[psycopg.Connection, None, None]:
+        conn = psycopg.connect(self._dsn)
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    def close(self) -> None:  # pragma: no cover - nothing to close explicitly
+        return
+
+
 class Database:
     def __init__(self, settings: DatabaseSettings, *, max_pool_size: int = 10) -> None:
         self.settings = settings
         self.max_pool_size = max_pool_size
-        self._pool: ConnectionPool | None = None
+        self._pool: object | None = None
 
     def connect(self) -> None:
         if self._pool is not None:
@@ -41,7 +63,13 @@ class Database:
             self.settings.dbname,
         )
         dsn = psycopg_conninfo.make_conninfo(**conninfo)
-        self._pool = ConnectionPool(dsn, min_size=1, max_size=self.max_pool_size)
+        if _PsycopgConnectionPool is not None:
+            self._pool = _PsycopgConnectionPool(dsn, min_size=1, max_size=self.max_pool_size)
+        else:
+            logger.warning(
+                "psycopg_pool is not installed; using direct connections without pooling."
+            )
+            self._pool = _DirectConnectionPool(dsn)
 
     def close(self) -> None:
         if self._pool is not None:
@@ -49,7 +77,7 @@ class Database:
             self._pool = None
 
     @contextmanager
-    def cursor(self) -> Iterable[psycopg.Cursor]:
+    def cursor(self) -> Generator[psycopg.Cursor, None, None]:
         if self._pool is None:
             self.connect()
         assert self._pool is not None
