@@ -454,7 +454,7 @@ class ETLPipeline:
         validated = []
         for item in data:
             weight = parse_decimal(item.get("weightPercentage"))
-            if not in_range(weight, 0, 100):
+            if weight is None or not in_range(weight, 0, 100):
                 rejection_logger.warning(
                     "Rejected country weight for %s | country=%s | weight=%s",
                     symbol,
@@ -486,7 +486,7 @@ class ETLPipeline:
         validated = []
         for item in data:
             weight = parse_decimal(item.get("weightPercentage"))
-            if not in_range(weight, 0, 100):
+            if weight is None or not in_range(weight, 0, 100):
                 rejection_logger.warning(
                     "Rejected industry weight for %s | industry=%s | weight=%s",
                     symbol,
@@ -518,7 +518,7 @@ class ETLPipeline:
         validated = []
         for item in data:
             weight = parse_decimal(item.get("weightPercentage"))
-            if not in_range(weight, 0, 100):
+            if weight is None or not in_range(weight, 0, 100):
                 rejection_logger.warning(
                     "Rejected asset weight for %s | asset=%s | weight=%s",
                     symbol,
@@ -560,7 +560,7 @@ class ETLPipeline:
         cleaned = []
         for item in holdings:
             weight = parse_decimal(item.get("weightPercentage"))
-            if not in_range(weight, 0, 100):
+            if weight is None or not in_range(weight, 0, 100):
                 rejection_logger.warning(
                     "Rejected holding weight for %s | asset=%s | weight=%s",
                     symbol,

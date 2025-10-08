@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict
@@ -42,7 +44,8 @@ class DownloadState:
     def _write_locked(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = self.path.with_suffix(".tmp")
-        temp_path.write_text(json.dumps(self._data, indent=2, sort_keys=True))
+        serialisable = self._normalise(self._data)
+        temp_path.write_text(json.dumps(serialisable, indent=2, sort_keys=True))
         temp_path.replace(self.path)
         self._pending_writes = 0
         self._dirty = False
@@ -74,11 +77,24 @@ class DownloadState:
     def update_symbol_state(self, symbol: str, payload: Dict[str, Any]) -> None:
         with self._lock:
             state = self._data.setdefault(symbol, {})
-            state.update(payload)
+            for key, value in payload.items():
+                state[key] = value
             self._pending_writes += 1
             self._dirty = True
             if self._should_flush_locked():
                 self._write_locked()
+
+    @staticmethod
+    def _normalise(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: DownloadState._normalise(val) for key, val in value.items()}
+        if isinstance(value, list):
+            return [DownloadState._normalise(item) for item in value]
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+        if isinstance(value, Decimal):
+            return str(value)
+        return value
 
     def flush(self) -> None:
         with self._lock:
