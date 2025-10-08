@@ -23,19 +23,81 @@ class SymbolRepository:
         rows = self.db.fetchall(query)
         return {row["symbol"] for row in rows}
 
-    def insert_symbols(self, symbols: Iterable[dict]) -> int:
-        query = "INSERT INTO etf_symbols (symbol, name, exchange, currency) VALUES (%s, %s, %s, %s) ON CONFLICT (symbol) DO NOTHING"
-        params = [
-            (
-                item.get("symbol"),
-                item.get("name"),
-                item.get("exchange"),
-                item.get("currency"),
+    def insert_symbols(self, symbols: Iterable[dict]) -> list[str]:
+        query = (
+            "INSERT INTO etf_symbols (symbol, nombre, mercado, moneda) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (symbol) DO NOTHING"
+        )
+        params: list[Tuple[str | None, str | None, str | None, str | None]] = []
+        inserted_symbols: list[str] = []
+        for item in symbols:
+            symbol = item.get("symbol")
+            if not symbol:
+                continue
+            params.append(
+                (
+                    symbol,
+                    item.get("name"),
+                    item.get("exchange"),
+                    item.get("currency"),
+                )
             )
-            for item in symbols
-        ]
-        self.db.execute_batch(query, params)
-        return len(params)
+            inserted_symbols.append(symbol)
+        if params:
+            self.db.execute_batch(query, params)
+        return inserted_symbols
+
+    def update_symbol_profiles(self, profiles: Iterable[dict]) -> None:
+        query = (
+            "UPDATE etf_symbols SET "
+            "nombre = %s, "
+            "mercado = %s, "
+            "isin = %s, "
+            "figi = %s, "
+            "cik = %s, "
+            "descripcion = %s, "
+            "assetclass = %s, "
+            "cusip = %s, "
+            "gestora_etf = %s, "
+            "expenseratio = %s, "
+            "total_acciones = %s, "
+            "volumen_medio = %s, "
+            "alta = %s, "
+            "nav = %s, "
+            "moneda = %s, "
+            "total_holdings = %s, "
+            "updatedat = %s "
+            "WHERE symbol = %s"
+        )
+        params: list[Tuple] = []
+        for profile in profiles:
+            symbol = profile.get("symbol")
+            if not symbol:
+                continue
+            params.append(
+                (
+                    profile.get("nombre"),
+                    profile.get("mercado"),
+                    profile.get("isin"),
+                    profile.get("figi"),
+                    profile.get("cik"),
+                    profile.get("descripcion"),
+                    profile.get("assetclass"),
+                    profile.get("cusip"),
+                    profile.get("gestora_etf"),
+                    profile.get("expenseratio"),
+                    profile.get("total_acciones"),
+                    profile.get("volumen_medio"),
+                    profile.get("alta"),
+                    profile.get("nav"),
+                    profile.get("moneda"),
+                    profile.get("total_holdings"),
+                    profile.get("updatedat"),
+                    symbol,
+                )
+            )
+        if params:
+            self.db.execute_batch(query, params)
 
 
 class TimeSeriesRepository:

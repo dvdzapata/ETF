@@ -33,6 +33,43 @@ def _to_int(value: Any) -> int | None:
         return None
 
 
+def _parse_date_value(value: Any) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+        except ValueError:
+            try:
+                return datetime.strptime(text, "%Y-%m-%d").date()
+            except ValueError:
+                return None
+    return None
+
+
+def _parse_datetime_value(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
 class ETLPipeline:
     def __init__(
         self,
@@ -91,8 +128,56 @@ class ETLPipeline:
         if not new_symbols:
             logger.info("No new symbols found")
             return
-        inserted = self.symbol_repo.insert_symbols(new_symbols)
-        logger.info("Inserted %s new symbols", inserted)
+        inserted_symbols = self.symbol_repo.insert_symbols(new_symbols)
+        if not inserted_symbols:
+            logger.info("No new symbols were persisted after filtering")
+            return
+        logger.info("Inserted %s new symbols", len(inserted_symbols))
+        self._populate_symbol_profiles(inserted_symbols)
+
+    def _populate_symbol_profiles(self, symbols: Iterable[str]) -> None:
+        symbols_list = list(symbols)
+        if not symbols_list:
+            return
+        logger.info("Downloading ETF profiles for %s symbols", len(symbols_list))
+        profiles: list[dict] = []
+        for symbol in symbols_list:
+            try:
+                data = self.client.get_json("etf/info", {"symbol": symbol})
+            except Exception:  # pylint: disable=broad-except
+                logger.exception("Failed to download profile for %s", symbol)
+                continue
+            if not isinstance(data, list) or not data:
+                logger.warning("Unexpected profile response for %s: %s", symbol, data)
+                continue
+            record = data[0] or {}
+            total_acciones_source = record.get("sharesOutstanding")
+            if total_acciones_source is None:
+                total_acciones_source = record.get("assetsUnderManagement")
+            profile = {
+                "symbol": symbol,
+                "nombre": record.get("name"),
+                "mercado": record.get("domicile") or record.get("exchange"),
+                "isin": record.get("isin"),
+                "figi": record.get("figi"),
+                "cik": record.get("cik"),
+                "descripcion": record.get("description"),
+                "assetclass": record.get("assetClass"),
+                "cusip": record.get("securityCusip"),
+                "gestora_etf": record.get("etfCompany"),
+                "expenseratio": parse_decimal(record.get("expenseRatio")),
+                "total_acciones": parse_decimal(total_acciones_source),
+                "volumen_medio": _to_int(record.get("avgVolume")),
+                "alta": _parse_date_value(record.get("inceptionDate")),
+                "nav": parse_decimal(record.get("nav")),
+                "moneda": record.get("navCurrency") or record.get("currency"),
+                "total_holdings": _to_int(record.get("holdingsCount")),
+                "updatedat": _parse_datetime_value(record.get("updatedAt")),
+            }
+            profiles.append(profile)
+        if profiles:
+            self.symbol_repo.update_symbol_profiles(profiles)
+            logger.info("Updated ETF profiles for %s symbols", len(profiles))
 
     def _process_symbol(self, symbol_row: dict) -> None:
         symbol_id = symbol_row["id"]
